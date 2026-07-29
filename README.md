@@ -36,4 +36,4 @@ Vanilla HTML, CSS, JavaScript. No framework, no build step, no backend.
 
 ## License
 
-GNU GPL v3.0
+MIT — see [LICENSE](LICENSE).
