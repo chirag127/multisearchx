@@ -1,59 +1,95 @@
 name: CI
 
-# This workflow will do a clean install of dependencies, build, test, and deploy components.
-# Visit https://github.com/marketplace/actions/npm-install for more information.
-
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   build_and_test:
     name: Build and Test
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
         node-version: ["20.x", "22.x"]
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-
-    - name: Install Dependencies
-      run: npm ci
-
-    - name: Lint with Biome
-      run: npm run lint -- --fix=false # Ensure no fixing in CI, only reporting
-
-    - name: Format with Biome
-      run: npm run format -- --check # Ensure no formatting in CI, only reporting
-
-    - name: Build Project
-      run: npm run build -- --emptyOutDir
-
-    - name: Run Unit Tests with Vitest
-      run: npm run test:unit
-
-    - name: Run E2E Tests with Playwright
-      run: npm run test:e2e
-
-    # - name: Upload Coverage Reports
-    #   uses: codecov/codecov-action@v4
-    #   with:
-    #     token: ${{ secrets.CODECOV_TOKEN }}
-    #     directory: ./coverage/
-
-    - name: Archive Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-output
-        path: dist/ # Assuming 'dist' is your build output directory
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Check JavaScript syntax
+        run: node --check script.js
+      - name: Test static search application
+        shell: bash
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const vm = require('node:vm');
+          const html = fs.readFileSync('index.html', 'utf8');
+          assert.match(html, /src="script\.js"/);
+          assert.match(html, /href="styles\.css"/);
+          assert.ok(fs.statSync('styles.css').size > 0);
+          const fields = Object.fromEntries(Object.entries({
+            delimiter: '|', 'search-terms': 'alpha|beta', 'append-text': 'end',
+            'prepend-text': 'start', delay: '5', 'number-of-searches': '1',
+            'num-custom-search-engines': '1', 'counter-value': ''
+          }).map(([key, value]) => [key, { value }]));
+          const engine = { getAttribute: key => ({
+            'data-bst': 'https://example.com/?q=', 'data-ast': '&lang=en'
+          })[key] };
+          const custom = [{ value: 'https://custom.example/?q=' }];
+          const opened = [];
+          const context = {
+            console,
+            document: {
+              getElementById: id => {
+                assert.match(html, new RegExp('id="' + id + '"'));
+                return fields[id];
+              },
+              querySelectorAll: selector => selector === '.custom-search-engine-field' ? custom : [engine]
+            },
+            window: { open: (url, target) => opened.push({ url, target }) },
+            setTimeout: (callback, delay, url) => {
+              assert.equal(delay, 5);
+              callback(url);
+            }
+          };
+          vm.createContext(context);
+          vm.runInContext(fs.readFileSync('script.js', 'utf8'), context);
+          assert.equal(context.getSearchUrl(null, '', 'term'), null);
+          assert.equal(context.getSearchUrl('https://example.com/?q=', '', 'term'), 'https://example.com/?q=term');
+          assert.equal(context.getSearchTerm(0, 'pre', ['term'], 'post', 0), 'pretermpost');
+          assert.equal(context.getSearchTerm(2, 'pre', ['term'], 'post', 0), 'preterm2post');
+          context.updateSearchCounter();
+          assert.equal(fields['counter-value'].textContent, 8);
+          context.search();
+          assert.deepEqual(opened.map(item => item.url), [
+            'https://example.com/?q=startalphaend&lang=en',
+            'https://example.com/?q=startalpha1end&lang=en',
+            'https://custom.example/?q=startalphaend',
+            'https://custom.example/?q=startalpha1end',
+            'https://example.com/?q=startbetaend&lang=en',
+            'https://example.com/?q=startbeta1end&lang=en',
+            'https://custom.example/?q=startbetaend',
+            'https://custom.example/?q=startbeta1end'
+          ]);
+          assert.ok(opened.every(item => item.target === '_blank'));
+          console.log('Static assets, search helpers, counter, and eight scheduled searches passed.');
+          NODE
+      - name: Archive static site
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-site-${{ matrix.node-version }}
+          path: |
+            index.html
+            script.js
+            styles.css
+            CNAME
+          if-no-files-found: error
